@@ -1,0 +1,12 @@
+{
+  "target_url": "https://divar.ir/s/tehran/rent-office/azerbaijan?districts=1029%2C1034%2C171%2C195%2C928&size=110-&has-photo=true",
+  "headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+  },
+  "notification": {
+    "title": "Update Detected",
+    "message": "There is a new update on the website."
+  },
+  "check_interval_seconds": 300,
+  "previous_data_file": "previous_data.txt"
+}
