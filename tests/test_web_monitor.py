@@ -53,6 +53,7 @@ class MonitorConfigTests(unittest.TestCase):
         self.assertEqual(config.target_url, "https://example.com/page")
         self.assertEqual(config.css_selector, ".item")
         self.assertEqual(config.comparison_mode, "text")
+        self.assertEqual(len(config.monitor_key), 64)
 
     def test_rejects_non_http_url_and_invalid_numbers(self):
         with self.assertRaises(ConfigurationError):
@@ -102,8 +103,11 @@ class WebMonitorTests(unittest.TestCase):
             self.assertEqual(result.matched_elements, 1)
             self.assertEqual(notifications, [])
             state_text = Path(state_file).read_text(encoding="utf-8")
+            state_payload = json.loads(state_text)
             self.assertNotIn("private value", state_text)
-            self.assertEqual(len(json.loads(state_text)["sha256"]), 64)
+            self.assertEqual(state_payload["version"], 1)
+            self.assertEqual(len(state_payload["sha256"]), 64)
+            self.assertEqual(len(state_payload["monitor_key"]), 64)
 
     def test_unchanged_check_does_not_notify(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -147,6 +151,47 @@ class WebMonitorTests(unittest.TestCase):
             self.assertEqual(result.status, "changed")
             self.assertEqual(notifications, [("Changed", "Content changed")])
 
+    def test_config_identity_change_creates_new_baseline(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_file = str(Path(temp_dir) / "state.json")
+            notifications = []
+            first_monitor = WebMonitor(
+                self._config(state_file, css_selector=".item"),
+                notifier=lambda title, message: notifications.append((title, message)),
+                session=FakeSession(
+                    [FakeResponse('<div class="item">first</div><div class="other">second</div>')]
+                ),
+            )
+            second_monitor = WebMonitor(
+                self._config(state_file, css_selector=".other"),
+                notifier=lambda title, message: notifications.append((title, message)),
+                session=FakeSession(
+                    [FakeResponse('<div class="item">first</div><div class="other">second</div>')]
+                ),
+            )
+
+            self.assertEqual(first_monitor.check_once().status, "baseline")
+            self.assertEqual(second_monitor.check_once().status, "baseline")
+            self.assertEqual(notifications, [])
+
+    def test_legacy_state_rebaselines_without_notification(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "state.json"
+            state_path.write_text(
+                json.dumps({"sha256": "a" * 64}),
+                encoding="utf-8",
+            )
+            notifications = []
+            monitor = WebMonitor(
+                self._config(str(state_path)),
+                notifier=lambda title, message: notifications.append((title, message)),
+                session=FakeSession([FakeResponse('<div class="item">current</div>')]),
+            )
+
+            self.assertEqual(monitor.check_once().status, "baseline")
+            self.assertEqual(notifications, [])
+            self.assertIn("monitor_key", json.loads(state_path.read_text(encoding="utf-8")))
+
     def test_html_mode_detects_attribute_changes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_file = str(Path(temp_dir) / "state.json")
@@ -175,6 +220,21 @@ class WebMonitorTests(unittest.TestCase):
                 monitor.check_once()
 
             self.assertIn("selector", str(context.exception).lower())
+
+    def test_invalid_selector_is_reported_as_monitor_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            monitor = WebMonitor(
+                self._config(
+                    str(Path(temp_dir) / "state.json"),
+                    css_selector="div[",
+                ),
+                session=FakeSession([FakeResponse("<div>content</div>")]),
+            )
+
+            with self.assertRaises(MonitorError) as context:
+                monitor.check_once()
+
+            self.assertEqual(str(context.exception), "Configured CSS selector is invalid")
 
     def test_request_timeout_and_user_agent_are_applied(self):
         with tempfile.TemporaryDirectory() as temp_dir:

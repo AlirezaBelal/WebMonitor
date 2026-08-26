@@ -107,6 +107,20 @@ class MonitorConfig:
             or "Monitored webpage content changed.",
         )
 
+    @property
+    def monitor_key(self) -> str:
+        """Return a privacy-safe identity for the content being monitored."""
+        identity = json.dumps(
+            {
+                "target_url": self.target_url,
+                "css_selector": self.css_selector,
+                "comparison_mode": self.comparison_mode,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return sha256(identity.encode("utf-8")).hexdigest()
+
 
 @dataclass(frozen=True)
 class CheckResult:
@@ -117,31 +131,59 @@ class CheckResult:
 
 
 class SnapshotStore:
-    """Persist only a SHA-256 digest, never scraped webpage content."""
+    """Persist only SHA-256 identifiers, never scraped webpage content."""
+
+    STATE_VERSION = 1
 
     def __init__(self, path: str) -> None:
         self.path = Path(path)
 
-    def load_digest(self) -> Optional[str]:
+    def load_digest(self, expected_monitor_key: Optional[str] = None) -> Optional[str]:
         if not self.path.exists():
             return None
 
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-            digest = payload.get("sha256")
-        except (OSError, json.JSONDecodeError, AttributeError) as exc:
+        except (OSError, json.JSONDecodeError) as exc:
             raise MonitorError("Unable to read monitor state") from exc
 
-        if not isinstance(digest, str) or len(digest) != 64:
+        if not isinstance(payload, Mapping):
             raise MonitorError("Monitor state is invalid")
-        return digest
 
-    def save_digest(self, digest: str) -> None:
+        if expected_monitor_key is not None:
+            stored_monitor_key = payload.get("monitor_key")
+            if stored_monitor_key is None:
+                # Legacy state files did not identify their target configuration.
+                # Re-baseline rather than risking a false change notification.
+                return None
+            if not _is_sha256_hex(stored_monitor_key):
+                raise MonitorError("Monitor state is invalid")
+            if stored_monitor_key != expected_monitor_key:
+                return None
+
+        digest = payload.get("sha256")
+        if not _is_sha256_hex(digest):
+            raise MonitorError("Monitor state is invalid")
+        return str(digest)
+
+    def save_digest(self, digest: str, monitor_key: Optional[str] = None) -> None:
+        if not _is_sha256_hex(digest):
+            raise MonitorError("Refusing to write invalid monitor digest")
+        if monitor_key is not None and not _is_sha256_hex(monitor_key):
+            raise MonitorError("Refusing to write invalid monitor identity")
+
+        payload = {
+            "version": self.STATE_VERSION,
+            "sha256": digest,
+        }
+        if monitor_key is not None:
+            payload["monitor_key"] = monitor_key
+
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary_path = self.path.with_name(f"{self.path.name}.tmp")
             temporary_path.write_text(
-                json.dumps({"sha256": digest}, indent=2) + "\n",
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             temporary_path.replace(self.path)
@@ -186,7 +228,11 @@ class WebMonitor:
             raise MonitorError(message) from exc
 
         soup = BeautifulSoup(response.text, "html.parser")
-        elements = soup.select(self.config.css_selector)
+        try:
+            elements = soup.select(self.config.css_selector)
+        except Exception as exc:
+            raise MonitorError("Configured CSS selector is invalid") from exc
+
         if not elements:
             raise MonitorError("Configured CSS selector matched no elements")
 
@@ -203,16 +249,17 @@ class WebMonitor:
     def check_once(self) -> CheckResult:
         """Run one check and classify it as baseline, unchanged, or changed."""
         current_digest, matched_elements = self.fetch_digest()
-        previous_digest = self.store.load_digest()
+        monitor_key = self.config.monitor_key
+        previous_digest = self.store.load_digest(monitor_key)
 
         if previous_digest is None:
-            self.store.save_digest(current_digest)
+            self.store.save_digest(current_digest, monitor_key)
             return CheckResult(status="baseline", matched_elements=matched_elements)
 
         if current_digest == previous_digest:
             return CheckResult(status="unchanged", matched_elements=matched_elements)
 
-        self.store.save_digest(current_digest)
+        self.store.save_digest(current_digest, monitor_key)
         self.notifier(
             self.config.notification_title,
             self.config.notification_message,
@@ -229,3 +276,13 @@ def _positive_float(value: object, field_name: str) -> float:
     if parsed <= 0:
         raise ConfigurationError(f"{field_name} must be a positive number")
     return parsed
+
+
+def _is_sha256_hex(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True

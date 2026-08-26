@@ -16,19 +16,24 @@ Many operational checks start with a person repeatedly opening a page to see whe
 
 The first successful check creates a baseline and does **not** send a false-positive notification. Later checks compare only a SHA-256 digest with the stored baseline.
 
+State is bound to the configured target URL, CSS selector, and comparison mode. If that monitoring identity changes, WebMonitor creates a fresh baseline instead of comparing unrelated content and producing a false alert.
+
 ## Core capabilities
 
 - **Configurable target URL and CSS selector**
 - **Text or HTML comparison modes**
 - **Explicit HTTP timeout and User-Agent**
 - **HTTP error handling without echoing the target URL**
+- **Controlled handling for invalid CSS selectors**
 - **Hash-only persistent state**; scraped page content is not written to disk
+- **Configuration-bound state identity** to prevent false alerts after target/selector changes
 - **First-run baseline semantics**
 - **Continuous polling or single-check mode**
 - **Configuration validation without a network request**
 - **Console notifications by default**
 - **Optional desktop notifications** through Plyer
-- **Mocked HTTP tests** with no live target dependency
+- **Mocked unit tests** for core behavior
+- **Real localhost CLI end-to-end testing** for the full monitoring flow
 - **GitHub Actions CI** and dependency vulnerability auditing
 
 ## Processing flow
@@ -144,11 +149,11 @@ Tracked example:
 
 | Status | Meaning | Notification |
 |---|---|---|
-| `baseline` | No previous digest exists; current state becomes the baseline | No |
+| `baseline` | No compatible previous digest exists; current state becomes the baseline | No |
 | `unchanged` | Current digest matches the stored baseline | No |
 | `changed` | Current digest differs; new digest becomes the baseline | Yes |
 
-If the configured selector matches no elements, the check fails instead of silently treating an empty selection as valid content.
+If the configured selector matches no elements, the check fails instead of silently treating an empty selection as valid content. Invalid selector syntax also fails with a controlled monitor error.
 
 ## Desktop notifications
 
@@ -165,37 +170,74 @@ Desktop notification availability depends on the local operating system and sess
 
 ## State privacy
 
-The state file contains only a digest shaped like:
+The state file stores only versioned SHA-256 identifiers shaped like:
 
 ```json
 {
-  "sha256": "<digest>"
+  "monitor_key": "<sha256-of-monitor-identity>",
+  "sha256": "<sha256-of-selected-content>",
+  "version": 1
 }
 ```
 
+`monitor_key` is derived from the target URL, CSS selector, and comparison mode. Neither selected webpage content nor the raw target configuration is persisted in the state file.
+
 Selected webpage content is held in memory for comparison and is not persisted by WebMonitor. The default `.webmonitor/` directory is ignored by Git.
+
+Legacy state files without a monitor identity are safely re-baselined once after upgrading rather than triggering a potentially incorrect change alert.
 
 ## Tests
 
-Run locally:
+Run the complete suite locally:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The suite covers:
+The unit suite covers:
 
 - configuration validation
+- deterministic monitor identity generation
 - first-run baseline behavior
 - unchanged and changed states
 - hash-only persistence
+- safe re-baselining after target/selector identity changes
+- legacy-state migration behavior
 - text and HTML comparison behavior
-- selector mismatch handling
+- selector mismatch and invalid-selector handling
 - request timeout and User-Agent propagation
 - privacy-safe HTTP errors
 - malformed state handling
 
-All HTTP behavior in tests is mocked; CI does not depend on a live monitored website.
+### CLI end-to-end test
+
+The repository also includes a deterministic end-to-end test that starts a real HTTP server on `127.0.0.1`, launches `main.py` as a subprocess, and verifies the complete workflow:
+
+```text
+local page: initial value
+        ↓
+baseline
+        ↓
+same page
+        ↓
+unchanged
+        ↓
+local page content changes
+        ↓
+changed + notification
+        ↓
+same changed page
+        ↓
+unchanged
+```
+
+The E2E test uses the real Requests client, HTML parsing, CSS selection, state file persistence, CLI exit codes, and console notification output. It requires no external monitored website and generates no third-party traffic.
+
+Run only the E2E test:
+
+```bash
+python -m unittest discover -s tests -p "test_cli_integration.py" -v
+```
 
 ## Continuous Integration
 
@@ -203,8 +245,9 @@ GitHub Actions verifies Python **3.10 through 3.14** by checking:
 
 - dependency installation and consistency
 - source compilation
-- unit tests
-- example configuration validation without network access
+- mocked unit tests
+- real localhost CLI end-to-end monitoring flow
+- example configuration validation without external network access
 - core dependency vulnerabilities with `pip-audit`
 - optional desktop dependency vulnerabilities with `pip-audit`
 
@@ -247,7 +290,8 @@ These are product boundaries, not capabilities claimed by the current implementa
 ├── SECURITY.md
 ├── LICENSE
 ├── tests/
-│   └── test_web_monitor.py
+│   ├── test_web_monitor.py
+│   └── test_cli_integration.py
 └── .github/
     ├── dependabot.yml
     └── workflows/
