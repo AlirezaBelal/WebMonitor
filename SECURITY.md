@@ -6,22 +6,42 @@ Security fixes are applied to the current `master` branch.
 
 ## Reporting a vulnerability
 
-Please report security issues privately through GitHub's security reporting features when available. Do not open public issues containing credentials, authenticated target URLs, session cookies, authorization headers, or other sensitive configuration.
+Please report security issues privately through GitHub's security reporting features when available. Do not open public issues containing credentials, authenticated target URLs, session cookies, authorization headers, Webhook URLs, Telegram bot tokens/chat IDs, or other sensitive runtime configuration.
 
-## Configuration safety
+## Configuration and secret safety
 
-`config.json` is intentionally ignored by Git. Keep local target URLs and any environment-specific settings outside source control. The tracked `config.example.json` contains only public placeholders.
+`config.json` is intentionally ignored by Git. Tracked example configurations contain only public placeholders and environment-variable names.
 
-WebMonitor does not require authentication headers for its core workflow. If you adapt it for authenticated pages, do not hard-code credentials in tracked files and do not include them in logs or bug reports.
+Webhook destinations and Telegram credentials are resolved from environment variables at runtime. Do not hard-code secret-bearing Webhook URLs or bot credentials in tracked JSON, unit files, Dockerfiles, source code, issue reports, CI logs, or screenshots.
 
-## State privacy
+For systemd deployments, keep the real environment file outside the repository and restrict its filesystem permissions. For containers, use your runtime's environment/secret mechanism rather than baking secrets into the image.
 
-WebMonitor stores only a SHA-256 digest of selected content. Scraped webpage content is not written to the state file. The `.webmonitor/` state directory is ignored by Git.
+## State and health privacy
+
+Target state files store only SHA-256 identifiers. Scraped webpage content is not written to state.
+
+Optional health output contains target names, statuses, matched-element counts, and controlled error messages. It intentionally excludes target URLs, CSS selectors, scraped content, Webhook destinations, and notification credentials.
+
+The `.webmonitor/` directory and local environment files are ignored by Git.
+
+## Notification reliability
+
+On a detected change, notification delivery occurs before the changed digest is committed. If delivery fails, the old digest remains active so the change can be attempted again during the next check.
+
+Notification delivery errors are intentionally generic. In particular, Telegram failures do not print the request URL because the bot token is embedded in that URL.
 
 ## Network behavior
 
-The configured target must be an absolute HTTP(S) URL. Requests use an explicit timeout. Operators are responsible for monitoring only pages they are authorized to access and for choosing a polling interval consistent with the target site's terms and acceptable-use policies.
+Configured monitoring targets and Webhook destinations must be absolute HTTP(S) URLs. Operators should prefer HTTPS Webhooks outside local development.
 
-## Dependency security
+Monitoring requests use explicit timeouts and bounded retry/backoff. Operators are responsible for monitoring only pages they are authorized to access and for selecting intervals consistent with target-site terms and acceptable-use policies.
 
-GitHub Actions uses read-only repository contents permission. Core and optional desktop dependencies are checked with `pip-audit`, and Dependabot is configured for Python and GitHub Actions updates.
+## Deployment hardening
+
+The tracked Docker image runs as a non-root user. The example systemd unit uses a dedicated service account, restrictive umask, a managed state directory, restart behavior, and systemd sandboxing controls.
+
+Review deployment examples for your environment before production use. Protect configuration/state directories according to the sensitivity of monitored targets and notification routing.
+
+## Dependency and CI security
+
+GitHub Actions uses read-only repository contents permission and does not persist checkout credentials. Core and optional desktop dependencies are checked with `pip-audit`, Dependabot is configured for Python and GitHub Actions updates, and CI builds/verifies the non-root Docker image.

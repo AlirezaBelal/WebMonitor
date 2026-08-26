@@ -4,6 +4,8 @@ import argparse
 import sys
 import time
 
+from health import HealthRecord, HealthReporter
+from notifications import build_notifier
 from web_monitor import (
     ConfigurationError,
     MonitorError,
@@ -12,52 +14,35 @@ from web_monitor import (
 )
 
 
-def build_notifier(use_desktop: bool, target_name: str, show_name: bool):
-    """Create a console or optional desktop notification callback."""
-    prefix = f"[{target_name}] " if show_name else ""
-
-    if not use_desktop:
-        return lambda title, message: print(f"{prefix}{title}: {message}")
-
-    try:
-        from plyer import notification
-    except ImportError as exc:
-        raise ConfigurationError(
-            "Desktop notifications require requirements-desktop.txt"
-        ) from exc
-
-    def desktop_notifier(title: str, message: str) -> None:
-        try:
-            desktop_title = f"{target_name}: {title}" if show_name else title
-            notification.notify(title=desktop_title, message=message, timeout=10)
-        except Exception:
-            print(
-                f"{prefix}Warning: desktop notification delivery failed.",
-                file=sys.stderr,
-            )
-
-    return desktop_notifier
-
-
-def report_result(target_name: str, status: str, matched_elements: int, show_name: bool) -> None:
+def report_result(
+    target_name: str,
+    status: str,
+    matched_elements: int,
+    show_name: bool,
+) -> None:
     prefix = f"[{target_name}] " if show_name else ""
     print(f"{prefix}Status: {status}; matched elements: {matched_elements}")
 
 
-def build_monitors(suite: MonitorSuiteConfig, use_desktop: bool):
+def build_monitors(suite: MonitorSuiteConfig, desktop_override: bool):
     show_name = len(suite.targets) > 1
     return [
         WebMonitor(
             config=target,
-            notifier=build_notifier(use_desktop, target.name, show_name),
+            notifier=build_notifier(
+                target,
+                desktop_override=desktop_override,
+                show_name=show_name,
+            ),
         )
         for target in suite.targets
     ]
 
 
-def run_checks(monitors, show_name: bool) -> int:
-    """Run every configured target once; continue even if one target fails."""
+def run_checks(monitors, show_name: bool) -> tuple[int, list[HealthRecord]]:
+    """Run every configured target once and continue after individual failures."""
     failures = 0
+    records = []
     for monitor in monitors:
         try:
             result = monitor.check_once()
@@ -67,11 +52,36 @@ def run_checks(monitors, show_name: bool) -> int:
                 result.matched_elements,
                 show_name,
             )
+            records.append(
+                HealthRecord(
+                    name=monitor.config.name,
+                    status=result.status,
+                    matched_elements=result.matched_elements,
+                )
+            )
         except MonitorError as exc:
             failures += 1
             prefix = f"[{monitor.config.name}] " if show_name else ""
             print(f"{prefix}Check failed: {exc}", file=sys.stderr)
-    return failures
+            records.append(
+                HealthRecord(
+                    name=monitor.config.name,
+                    status="error",
+                    error=str(exc),
+                )
+            )
+    return failures, records
+
+
+def write_health(suite: MonitorSuiteConfig, records: list[HealthRecord]) -> bool:
+    if suite.health_file is None:
+        return True
+    try:
+        HealthReporter(suite.health_file).write(records)
+        return True
+    except MonitorError as exc:
+        print(f"Health output failed: {exc}", file=sys.stderr)
+        return False
 
 
 def main() -> int:
@@ -98,7 +108,7 @@ def main() -> int:
     parser.add_argument(
         "--desktop-notifications",
         action="store_true",
-        help="Use optional desktop notifications instead of console notifications",
+        help="Override configured notification backends with desktop notifications",
     )
     args = parser.parse_args()
 
@@ -112,14 +122,17 @@ def main() -> int:
         show_name = len(monitors) > 1
 
         if args.once:
-            return 1 if run_checks(monitors, show_name) else 0
+            failures, records = run_checks(monitors, show_name)
+            health_ok = write_health(suite, records)
+            return 1 if failures or not health_ok else 0
 
         print(
             "Monitoring started. Press Ctrl+C to stop. "
             f"Targets: {len(monitors)}; interval: {suite.check_interval_seconds:g}s"
         )
         while True:
-            run_checks(monitors, show_name)
+            _failures, records = run_checks(monitors, show_name)
+            write_health(suite, records)
             time.sleep(suite.check_interval_seconds)
 
     except FileNotFoundError:

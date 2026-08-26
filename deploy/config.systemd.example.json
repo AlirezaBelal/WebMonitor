@@ -1,0 +1,23 @@
+{
+  "check_interval_seconds": 300,
+  "request_timeout_seconds": 10,
+  "max_attempts": 3,
+  "backoff_seconds": 2,
+  "health_file": "/var/lib/webmonitor/health.json",
+  "user_agent": "WebMonitor/4.0",
+  "targets": [
+    {
+      "name": "homepage",
+      "target_url": "https://example.com/",
+      "css_selector": "body",
+      "state_file": "/var/lib/webmonitor/homepage.json",
+      "notification": {
+        "backend": "telegram",
+        "telegram_token_env": "WEBMONITOR_TELEGRAM_BOT_TOKEN",
+        "telegram_chat_id_env": "WEBMONITOR_TELEGRAM_CHAT_ID",
+        "title": "WebMonitor change detected",
+        "message": "Homepage content changed."
+      }
+    }
+  ]
+}

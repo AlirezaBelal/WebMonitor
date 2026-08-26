@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,18 @@ class MutablePageHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length)
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        self.server.webhook_events.append({"path": path, "payload": payload})
+        self.send_response(204)
+        self.end_headers()
+
     def log_message(self, _format, *args):
         return
 
@@ -58,6 +71,7 @@ class CliIntegrationTests(unittest.TestCase):
         }
         self.server.failures_remaining = {}
         self.server.request_counts = {}
+        self.server.webhook_events = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
@@ -93,6 +107,7 @@ class CliIntegrationTests(unittest.TestCase):
             "request_timeout_seconds": 3,
             "max_attempts": 3,
             "backoff_seconds": 0.01,
+            "health_file": str(directory / "health.json"),
             "user_agent": "WebMonitor-E2E/1.0",
             "targets": [
                 {
@@ -101,6 +116,7 @@ class CliIntegrationTests(unittest.TestCase):
                     "css_selector": "#alpha",
                     "state_file": str(directory / "alpha-state.json"),
                     "notification": {
+                        "backend": "console",
                         "title": "Alpha change",
                         "message": "alpha changed",
                     },
@@ -111,6 +127,8 @@ class CliIntegrationTests(unittest.TestCase):
                     "css_selector": "#beta",
                     "state_file": str(directory / "beta-state.json"),
                     "notification": {
+                        "backend": "webhook",
+                        "webhook_url_env": "WEBMONITOR_E2E_WEBHOOK_URL",
                         "title": "Beta change",
                         "message": "beta changed",
                     },
@@ -120,7 +138,14 @@ class CliIntegrationTests(unittest.TestCase):
         config_path.write_text(json.dumps(payload), encoding="utf-8")
         return config_path
 
-    def _run_once(self, config_path: Path) -> subprocess.CompletedProcess:
+    def _run_once(
+        self,
+        config_path: Path,
+        extra_env=None,
+    ) -> subprocess.CompletedProcess:
+        environment = os.environ.copy()
+        if extra_env:
+            environment.update(extra_env)
         return subprocess.run(
             [
                 sys.executable,
@@ -134,7 +159,15 @@ class CliIntegrationTests(unittest.TestCase):
             capture_output=True,
             timeout=20,
             check=False,
+            env=environment,
         )
+
+    def _webhook_environment(self):
+        return {
+            "WEBMONITOR_E2E_WEBHOOK_URL": (
+                f"http://127.0.0.1:{self.server.server_port}/hook"
+            )
+        }
 
     def test_legacy_single_target_cli_remains_compatible(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -156,31 +189,53 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertIn("E2E change: Local fixture changed", changed.stdout)
             self.assertIn("Status: changed; matched elements: 1", changed.stdout)
 
-    def test_multi_target_cli_retries_and_tracks_state_independently(self):
+    def test_multi_target_cli_retries_webhook_and_health_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
             config_path = self._write_multi_config(directory)
+            env = self._webhook_environment()
+            health_path = directory / "health.json"
             self.server.failures_remaining["/alpha"] = 2
 
-            baseline = self._run_once(config_path)
+            baseline = self._run_once(config_path, env)
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
             self.assertIn("[alpha] Status: baseline; matched elements: 1", baseline.stdout)
             self.assertIn("[beta] Status: baseline; matched elements: 1", baseline.stdout)
             self.assertEqual(self.server.request_counts["/alpha"], 3)
             self.assertEqual(self.server.request_counts["/beta"], 1)
+            self.assertEqual(self.server.webhook_events, [])
 
-            unchanged = self._run_once(config_path)
+            baseline_health = json.loads(health_path.read_text(encoding="utf-8"))
+            self.assertTrue(baseline_health["healthy"])
+            self.assertEqual(baseline_health["targets_total"], 2)
+            self.assertNotIn(
+                f"http://127.0.0.1:{self.server.server_port}",
+                health_path.read_text(encoding="utf-8"),
+            )
+
+            unchanged = self._run_once(config_path, env)
             self.assertEqual(unchanged.returncode, 0, unchanged.stderr)
             self.assertIn("[alpha] Status: unchanged; matched elements: 1", unchanged.stdout)
             self.assertIn("[beta] Status: unchanged; matched elements: 1", unchanged.stdout)
 
             self.server.pages["/beta"] = '<main><div id="beta">beta two</div></main>'
-            changed = self._run_once(config_path)
+            changed = self._run_once(config_path, env)
             self.assertEqual(changed.returncode, 0, changed.stderr)
             self.assertIn("[alpha] Status: unchanged; matched elements: 1", changed.stdout)
-            self.assertIn("[beta] Beta change: beta changed", changed.stdout)
             self.assertIn("[beta] Status: changed; matched elements: 1", changed.stdout)
-            self.assertNotIn("Alpha change", changed.stdout)
+            self.assertEqual(len(self.server.webhook_events), 1)
+
+            event = self.server.webhook_events[0]
+            self.assertEqual(event["path"], "/hook")
+            self.assertEqual(
+                event["payload"],
+                {
+                    "event": "webmonitor.change",
+                    "target": "beta",
+                    "title": "Beta change",
+                    "message": "beta changed",
+                },
+            )
 
             alpha_state = (directory / "alpha-state.json").read_text(encoding="utf-8")
             beta_state = (directory / "beta-state.json").read_text(encoding="utf-8")
@@ -191,18 +246,34 @@ class CliIntegrationTests(unittest.TestCase):
                 json.loads(beta_state)["monitor_key"],
             )
 
-    def test_one_target_failure_does_not_block_other_targets(self):
+            changed_health = json.loads(health_path.read_text(encoding="utf-8"))
+            self.assertTrue(changed_health["healthy"])
+            statuses = {item["name"]: item["status"] for item in changed_health["targets"]}
+            self.assertEqual(statuses["alpha"], "unchanged")
+            self.assertEqual(statuses["beta"], "changed")
+
+    def test_one_target_failure_does_not_block_other_targets_and_marks_health(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
             config_path = self._write_multi_config(directory, alpha_path="/missing")
 
-            result = self._run_once(config_path)
+            result = self._run_once(config_path, self._webhook_environment())
 
             self.assertEqual(result.returncode, 1)
-            self.assertIn("[alpha] Check failed: HTTP request failed with status 404", result.stderr)
+            self.assertIn(
+                "[alpha] Check failed: HTTP request failed with status 404",
+                result.stderr,
+            )
             self.assertIn("[beta] Status: baseline; matched elements: 1", result.stdout)
             self.assertTrue((directory / "beta-state.json").exists())
             self.assertFalse((directory / "alpha-state.json").exists())
+
+            health = json.loads((directory / "health.json").read_text(encoding="utf-8"))
+            self.assertFalse(health["healthy"])
+            self.assertEqual(health["checks_failed"], 1)
+            statuses = {item["name"]: item["status"] for item in health["targets"]}
+            self.assertEqual(statuses["alpha"], "error")
+            self.assertEqual(statuses["beta"], "baseline")
 
 
 if __name__ == "__main__":

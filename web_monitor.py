@@ -17,10 +17,11 @@ import requests
 
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _TARGET_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class MonitorError(RuntimeError):
-    """Base error for configuration, HTTP, parsing, and state failures."""
+    """Base error for configuration, HTTP, parsing, state, and notification failures."""
 
 
 class ConfigurationError(MonitorError):
@@ -37,9 +38,14 @@ class MonitorConfig:
     check_interval_seconds: float = 300.0
     request_timeout_seconds: float = 10.0
     state_file: str = ".webmonitor/state.json"
-    user_agent: str = "WebMonitor/3.0"
+    user_agent: str = "WebMonitor/4.0"
     notification_title: str = "WebMonitor change detected"
     notification_message: str = "Monitored webpage content changed."
+    notification_backend: str = "console"
+    notification_timeout_seconds: float = 10.0
+    webhook_url_env: str = "WEBMONITOR_WEBHOOK_URL"
+    telegram_token_env: str = "WEBMONITOR_TELEGRAM_BOT_TOKEN"
+    telegram_chat_id_env: str = "WEBMONITOR_TELEGRAM_CHAT_ID"
     max_attempts: int = 3
     backoff_seconds: float = 1.0
     name: str = "default"
@@ -96,7 +102,7 @@ class MonitorConfig:
         if not state_file:
             raise ConfigurationError("state_file is required")
 
-        user_agent = str(payload.get("user_agent", "WebMonitor/3.0")).strip()
+        user_agent = str(payload.get("user_agent", "WebMonitor/4.0")).strip()
         if not user_agent:
             raise ConfigurationError("user_agent is required")
 
@@ -105,6 +111,33 @@ class MonitorConfig:
             notification = {}
         if not isinstance(notification, Mapping):
             raise ConfigurationError("notification must be a JSON object")
+
+        notification_backend = str(
+            notification.get("backend", "console")
+        ).strip().lower()
+        if notification_backend not in {"console", "desktop", "webhook", "telegram"}:
+            raise ConfigurationError(
+                "notification.backend must be console, desktop, webhook, or telegram"
+            )
+
+        notification_timeout_seconds = _positive_float(
+            notification.get("timeout_seconds", 10),
+            "notification.timeout_seconds",
+        )
+        webhook_url_env = _environment_variable_name(
+            notification.get("webhook_url_env", "WEBMONITOR_WEBHOOK_URL"),
+            "notification.webhook_url_env",
+        )
+        telegram_token_env = _environment_variable_name(
+            notification.get(
+                "telegram_token_env", "WEBMONITOR_TELEGRAM_BOT_TOKEN"
+            ),
+            "notification.telegram_token_env",
+        )
+        telegram_chat_id_env = _environment_variable_name(
+            notification.get("telegram_chat_id_env", "WEBMONITOR_TELEGRAM_CHAT_ID"),
+            "notification.telegram_chat_id_env",
+        )
 
         return cls(
             target_url=target_url,
@@ -122,6 +155,11 @@ class MonitorConfig:
                 notification.get("message", "Monitored webpage content changed.")
             ).strip()
             or "Monitored webpage content changed.",
+            notification_backend=notification_backend,
+            notification_timeout_seconds=notification_timeout_seconds,
+            webhook_url_env=webhook_url_env,
+            telegram_token_env=telegram_token_env,
+            telegram_chat_id_env=telegram_chat_id_env,
             max_attempts=max_attempts,
             backoff_seconds=backoff_seconds,
             name=name,
@@ -148,6 +186,7 @@ class MonitorSuiteConfig:
 
     targets: tuple[MonitorConfig, ...]
     check_interval_seconds: float
+    health_file: Optional[str] = None
 
     @classmethod
     def from_file(cls, path: str) -> "MonitorSuiteConfig":
@@ -155,12 +194,14 @@ class MonitorSuiteConfig:
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, object]) -> "MonitorSuiteConfig":
+        health_file = _optional_path(payload.get("health_file"), "health_file")
         raw_targets = payload.get("targets")
         if raw_targets is None:
             target = MonitorConfig.from_mapping(payload)
             return cls(
                 targets=(target,),
                 check_interval_seconds=target.check_interval_seconds,
+                health_file=health_file,
             )
 
         if not isinstance(raw_targets, list) or not raw_targets:
@@ -181,7 +222,7 @@ class MonitorSuiteConfig:
             payload.get("backoff_seconds", 1),
             "backoff_seconds",
         )
-        shared_user_agent = str(payload.get("user_agent", "WebMonitor/3.0")).strip()
+        shared_user_agent = str(payload.get("user_agent", "WebMonitor/4.0")).strip()
         if not shared_user_agent:
             raise ConfigurationError("user_agent is required")
 
@@ -222,7 +263,14 @@ class MonitorSuiteConfig:
             state_files.add(normalized_state)
             targets.append(target)
 
-        return cls(targets=tuple(targets), check_interval_seconds=shared_interval)
+        if health_file is not None and str(Path(health_file)) in state_files:
+            raise ConfigurationError("health_file cannot be the same as a target state_file")
+
+        return cls(
+            targets=tuple(targets),
+            check_interval_seconds=shared_interval,
+            health_file=health_file,
+        )
 
 
 @dataclass(frozen=True)
@@ -381,11 +429,17 @@ class WebMonitor:
         if current_digest == previous_digest:
             return CheckResult(status="unchanged", matched_elements=matched_elements)
 
+        # Deliver before committing the new digest. If delivery fails, the previous
+        # digest remains in place so the change is retried on the next check.
+        try:
+            self.notifier(
+                self.config.notification_title,
+                self.config.notification_message,
+            )
+        except Exception as exc:
+            raise MonitorError("Notification delivery failed") from exc
+
         self.store.save_digest(current_digest, monitor_key)
-        self.notifier(
-            self.config.notification_title,
-            self.config.notification_message,
-        )
         return CheckResult(status="changed", matched_elements=matched_elements)
 
 
@@ -444,6 +498,22 @@ def _bounded_int(value: object, field_name: str, minimum: int, maximum: int) -> 
             f"{field_name} must be between {minimum} and {maximum}"
         )
     return parsed
+
+
+def _environment_variable_name(value: object, field_name: str) -> str:
+    name = str(value).strip()
+    if not _ENV_NAME_PATTERN.fullmatch(name):
+        raise ConfigurationError(f"{field_name} must be a valid environment variable name")
+    return name
+
+
+def _optional_path(value: object, field_name: str) -> Optional[str]:
+    if value is None:
+        return None
+    path = str(value).strip()
+    if not path:
+        raise ConfigurationError(f"{field_name} must be a non-empty path or null")
+    return path
 
 
 def _is_sha256_hex(value: object) -> bool:

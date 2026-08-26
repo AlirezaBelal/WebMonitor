@@ -1,0 +1,22 @@
+{
+  "check_interval_seconds": 300,
+  "request_timeout_seconds": 10,
+  "max_attempts": 3,
+  "backoff_seconds": 2,
+  "health_file": "/data/health.json",
+  "user_agent": "WebMonitor/4.0",
+  "targets": [
+    {
+      "name": "homepage",
+      "target_url": "https://example.com/",
+      "css_selector": "body",
+      "state_file": "/data/homepage.json",
+      "notification": {
+        "backend": "webhook",
+        "webhook_url_env": "WEBMONITOR_WEBHOOK_URL",
+        "title": "WebMonitor change detected",
+        "message": "Homepage content changed."
+      }
+    }
+  ]
+}

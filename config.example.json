@@ -3,7 +3,8 @@
   "request_timeout_seconds": 10,
   "max_attempts": 3,
   "backoff_seconds": 1,
-  "user_agent": "WebMonitor/3.0 (+https://github.com/AlirezaBelal/WebMonitor)",
+  "health_file": ".webmonitor/health.json",
+  "user_agent": "WebMonitor/4.0 (+https://github.com/AlirezaBelal/WebMonitor)",
   "targets": [
     {
       "name": "homepage",
@@ -11,6 +12,7 @@
       "css_selector": "body",
       "comparison_mode": "text",
       "notification": {
+        "backend": "console",
         "title": "WebMonitor change detected",
         "message": "Homepage content changed."
       }
@@ -22,6 +24,8 @@
       "comparison_mode": "html",
       "max_attempts": 2,
       "notification": {
+        "backend": "webhook",
+        "webhook_url_env": "WEBMONITOR_WEBHOOK_URL",
         "title": "WebMonitor change detected",
         "message": "Documentation content changed."
       }

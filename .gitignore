@@ -5,8 +5,10 @@ __pycache__/
 venv/
 env/
 
-# Local configuration and monitor state
+# Local configuration, secrets, and monitor state
 config.json
+.env
+*.env
 .webmonitor/
 previous_data.txt
 

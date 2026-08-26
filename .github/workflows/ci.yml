@@ -40,16 +40,23 @@ jobs:
         run: python -m pip check
 
       - name: Compile source
-        run: python -m compileall -q main.py web_monitor.py tests
+        run: python -m compileall -q main.py web_monitor.py notifications.py health.py tests
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests -p "test_web_monitor.py" -v
+        run: |
+          python -m unittest discover -s tests -p "test_web_monitor.py" -v
+          python -m unittest discover -s tests -p "test_notifications.py" -v
+          python -m unittest discover -s tests -p "test_health.py" -v
+          python -m unittest discover -s tests -p "test_reliability.py" -v
 
       - name: Run CLI end-to-end test
         run: python -m unittest discover -s tests -p "test_cli_integration.py" -v
 
-      - name: Validate example configuration
-        run: python main.py --config config.example.json --validate-config
+      - name: Validate tracked configurations
+        run: |
+          python main.py --config config.example.json --validate-config
+          python main.py --config deploy/config.container.example.json --validate-config
+          python main.py --config deploy/config.systemd.example.json --validate-config
 
   security-audit:
     name: Dependency audit
@@ -75,3 +82,27 @@ jobs:
 
       - name: Audit optional desktop dependencies
         run: python -m pip_audit -r requirements-desktop.txt
+
+  container:
+    name: Docker build and runtime
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: docker build -t webmonitor-ci .
+
+      - name: Verify non-root runtime
+        run: |
+          uid="$(docker run --rm --entrypoint id webmonitor-ci -u)"
+          test "$uid" != "0"
+
+      - name: Validate container configuration
+        run: |
+          docker run --rm \
+            -v "$PWD/deploy/config.container.example.json:/config/config.json:ro" \
+            webmonitor-ci --validate-config
