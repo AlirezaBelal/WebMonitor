@@ -1,2 +1,21 @@
-venv
-.idea
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Local configuration and monitor state
+config.json
+.webmonitor/
+previous_data.txt
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Test / tooling artifacts
+.pytest_cache/
+.coverage
+htmlcov/

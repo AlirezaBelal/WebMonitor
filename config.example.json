@@ -1,0 +1,13 @@
+{
+  "target_url": "https://example.com/",
+  "css_selector": "body",
+  "comparison_mode": "text",
+  "check_interval_seconds": 300,
+  "request_timeout_seconds": 10,
+  "state_file": ".webmonitor/state.json",
+  "user_agent": "WebMonitor/2.0 (+https://github.com/AlirezaBelal/WebMonitor)",
+  "notification": {
+    "title": "WebMonitor change detected",
+    "message": "Monitored webpage content changed."
+  }
+}
