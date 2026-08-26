@@ -4,13 +4,20 @@ import argparse
 import sys
 import time
 
-from web_monitor import ConfigurationError, MonitorConfig, MonitorError, WebMonitor
+from web_monitor import (
+    ConfigurationError,
+    MonitorError,
+    MonitorSuiteConfig,
+    WebMonitor,
+)
 
 
-def build_notifier(use_desktop: bool):
+def build_notifier(use_desktop: bool, target_name: str, show_name: bool):
     """Create a console or optional desktop notification callback."""
+    prefix = f"[{target_name}] " if show_name else ""
+
     if not use_desktop:
-        return lambda title, message: print(f"{title}: {message}")
+        return lambda title, message: print(f"{prefix}{title}: {message}")
 
     try:
         from plyer import notification
@@ -21,24 +28,56 @@ def build_notifier(use_desktop: bool):
 
     def desktop_notifier(title: str, message: str) -> None:
         try:
-            notification.notify(title=title, message=message, timeout=10)
+            desktop_title = f"{target_name}: {title}" if show_name else title
+            notification.notify(title=desktop_title, message=message, timeout=10)
         except Exception:
             print(
-                "Warning: desktop notification delivery failed.",
+                f"{prefix}Warning: desktop notification delivery failed.",
                 file=sys.stderr,
             )
 
     return desktop_notifier
 
 
-def report_result(status: str, matched_elements: int) -> None:
-    print(f"Status: {status}; matched elements: {matched_elements}")
+def report_result(target_name: str, status: str, matched_elements: int, show_name: bool) -> None:
+    prefix = f"[{target_name}] " if show_name else ""
+    print(f"{prefix}Status: {status}; matched elements: {matched_elements}")
+
+
+def build_monitors(suite: MonitorSuiteConfig, use_desktop: bool):
+    show_name = len(suite.targets) > 1
+    return [
+        WebMonitor(
+            config=target,
+            notifier=build_notifier(use_desktop, target.name, show_name),
+        )
+        for target in suite.targets
+    ]
+
+
+def run_checks(monitors, show_name: bool) -> int:
+    """Run every configured target once; continue even if one target fails."""
+    failures = 0
+    for monitor in monitors:
+        try:
+            result = monitor.check_once()
+            report_result(
+                monitor.config.name,
+                result.status,
+                result.matched_elements,
+                show_name,
+            )
+        except MonitorError as exc:
+            failures += 1
+            prefix = f"[{monitor.config.name}] " if show_name else ""
+            print(f"{prefix}Check failed: {exc}", file=sys.stderr)
+    return failures
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Monitor selected content on a webpage and report when its digest changes."
+            "Monitor selected content across one or more webpages and report digest changes."
         )
     )
     parser.add_argument(
@@ -49,7 +88,7 @@ def main() -> int:
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Run one check and exit instead of polling continuously",
+        help="Run one check for every configured target and exit",
     )
     parser.add_argument(
         "--validate-config",
@@ -64,32 +103,24 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        config = MonitorConfig.from_file(args.config)
+        suite = MonitorSuiteConfig.from_file(args.config)
         if args.validate_config:
-            print("Configuration valid.")
+            print(f"Configuration valid: {len(suite.targets)} target(s).")
             return 0
 
-        monitor = WebMonitor(
-            config=config,
-            notifier=build_notifier(args.desktop_notifications),
-        )
+        monitors = build_monitors(suite, args.desktop_notifications)
+        show_name = len(monitors) > 1
 
         if args.once:
-            result = monitor.check_once()
-            report_result(result.status, result.matched_elements)
-            return 0
+            return 1 if run_checks(monitors, show_name) else 0
 
         print(
             "Monitoring started. Press Ctrl+C to stop. "
-            f"Interval: {config.check_interval_seconds:g}s"
+            f"Targets: {len(monitors)}; interval: {suite.check_interval_seconds:g}s"
         )
         while True:
-            try:
-                result = monitor.check_once()
-                report_result(result.status, result.matched_elements)
-            except MonitorError as exc:
-                print(f"Check failed: {exc}", file=sys.stderr)
-            time.sleep(config.check_interval_seconds)
+            run_checks(monitors, show_name)
+            time.sleep(suite.check_interval_seconds)
 
     except FileNotFoundError:
         print(
@@ -101,9 +132,6 @@ def main() -> int:
     except ConfigurationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
-    except MonitorError as exc:
-        print(f"Monitor error: {exc}", file=sys.stderr)
-        return 1
     except KeyboardInterrupt:
         print("Monitoring stopped.")
         return 0

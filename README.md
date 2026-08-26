@@ -2,59 +2,54 @@
 
 [![CI](https://github.com/AlirezaBelal/WebMonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/AlirezaBelal/WebMonitor/actions/workflows/ci.yml)
 
-> A configurable Python workflow for polling selected webpage content, detecting meaningful changes, and notifying an operator without storing scraped content.
+> A configurable Python monitoring workflow for polling selected content across one or more webpages, detecting meaningful changes, and notifying an operator without persisting scraped content.
 
-WebMonitor turns a small manual-checking task into a repeatable monitoring workflow:
+WebMonitor turns repeated manual page checks into a small operational workflow:
 
-**fetch → select → normalize → hash → compare → notify**
+**fetch → retry if transient → select → normalize → hash → compare → notify**
 
-It is designed as a focused webpage change detector, not as a full uptime/APM platform or browser automation system.
+It is intentionally a focused webpage change detector rather than a full uptime/APM platform or browser automation system.
 
 ## Product / automation context
 
-Many operational checks start with a person repeatedly opening a page to see whether a relevant section changed. WebMonitor replaces that repetitive step with a controlled polling workflow while keeping the monitored scope explicit through a CSS selector.
+Operational teams often care about a small number of page sections: a status notice, release list, documentation section, inventory message, or public announcement. WebMonitor lets one process monitor multiple named targets while keeping each target's state isolated.
 
-The first successful check creates a baseline and does **not** send a false-positive notification. Later checks compare only a SHA-256 digest with the stored baseline.
-
-State is bound to the configured target URL, CSS selector, and comparison mode. If that monitoring identity changes, WebMonitor creates a fresh baseline instead of comparing unrelated content and producing a false alert.
+The first successful check creates a baseline and sends no notification. Later checks compare only a SHA-256 digest against the stored baseline.
 
 ## Core capabilities
 
-- **Configurable target URL and CSS selector**
+- **One or many named targets in one process**
+- **Independent state per target**
 - **Text or HTML comparison modes**
+- **Retry with exponential backoff for transient HTTP/network failures**
+- **Retryable HTTP statuses:** `429`, `500`, `502`, `503`, `504`
+- **Immediate failure for non-transient statuses such as `404`**
 - **Explicit HTTP timeout and User-Agent**
-- **HTTP error handling without echoing the target URL**
-- **Controlled handling for invalid CSS selectors**
-- **Hash-only persistent state**; scraped page content is not written to disk
-- **Configuration-bound state identity** to prevent false alerts after target/selector changes
+- **Hash-only persistent state**; scraped page content is never written by WebMonitor
+- **Configuration-aware state identity** to avoid false alerts after target/selector changes
 - **First-run baseline semantics**
-- **Continuous polling or single-check mode**
-- **Configuration validation without a network request**
+- **Continuous polling or single-cycle mode**
+- **Per-target failure isolation**: one failed target does not block the others
 - **Console notifications by default**
 - **Optional desktop notifications** through Plyer
-- **Mocked unit tests** for core behavior
-- **Real localhost CLI end-to-end testing** for the full monitoring flow
-- **GitHub Actions CI** and dependency vulnerability auditing
+- **Real localhost CLI integration tests** in CI
+- **Dependency vulnerability auditing**
 
-## Processing flow
+## Processing model
 
 ```text
-Target webpage
-      ↓
-HTTP request with timeout
-      ↓
-CSS selector
-      ↓
-Selected text or HTML
-      ↓
-SHA-256 digest
-      ↓
-Compare with previous digest
-      ↓
-┌────────────┬─────────────┬────────────┐
-│ baseline   │ unchanged   │ changed    │
-│ save only  │ no alert    │ save+alert │
-└────────────┴─────────────┴────────────┘
+                    ┌──────────── target: docs ─────────────┐
+                    │                                       │
+                    │  HTTP GET → retry/backoff → selector  │
+                    │                ↓                      │
+config → target list│             SHA-256                   │→ status / notification
+                    │                ↓                      │
+                    │          isolated state               │
+                    └───────────────────────────────────────┘
+
+                    ┌─────────── target: homepage ──────────┐
+                    │     same workflow, separate state     │
+                    └───────────────────────────────────────┘
 ```
 
 ## Quick start
@@ -97,15 +92,15 @@ Windows PowerShell:
 Copy-Item config.example.json config.json
 ```
 
-Edit `config.json` for the page and section you are authorized to monitor.
+Edit `config.json` for pages and sections you are authorized to monitor.
 
-Validate it without making a request:
+Validate without making network requests:
 
 ```bash
 python main.py --config config.json --validate-config
 ```
 
-Run one check:
+Run one cycle across all targets:
 
 ```bash
 python main.py --config config.json --once
@@ -117,9 +112,50 @@ Start continuous polling:
 python main.py --config config.json
 ```
 
-## Configuration
+## Multi-target configuration
 
-Tracked example:
+```json
+{
+  "check_interval_seconds": 300,
+  "request_timeout_seconds": 10,
+  "max_attempts": 3,
+  "backoff_seconds": 1,
+  "user_agent": "WebMonitor/3.0 (+https://github.com/AlirezaBelal/WebMonitor)",
+  "targets": [
+    {
+      "name": "homepage",
+      "target_url": "https://example.com/",
+      "css_selector": "body",
+      "comparison_mode": "text",
+      "notification": {
+        "title": "WebMonitor change detected",
+        "message": "Homepage content changed."
+      }
+    },
+    {
+      "name": "docs",
+      "target_url": "https://example.com/docs",
+      "css_selector": "main",
+      "comparison_mode": "html",
+      "max_attempts": 2,
+      "notification": {
+        "title": "WebMonitor change detected",
+        "message": "Documentation content changed."
+      }
+    }
+  ]
+}
+```
+
+`check_interval_seconds` is process-wide in multi-target mode. Request timeout, retry count, backoff, comparison mode, state path, and notifications may be overridden per target.
+
+Target names must be unique and use only letters, numbers, dots, underscores, and hyphens. When `state_file` is omitted, WebMonitor creates an isolated path such as `.webmonitor/homepage.json`.
+
+Multiple targets are not allowed to point at the same `state_file`.
+
+## Backward-compatible single-target configuration
+
+Existing single-target configurations remain supported:
 
 ```json
 {
@@ -128,32 +164,78 @@ Tracked example:
   "comparison_mode": "text",
   "check_interval_seconds": 300,
   "request_timeout_seconds": 10,
-  "state_file": ".webmonitor/state.json",
-  "user_agent": "WebMonitor/2.0 (+https://github.com/AlirezaBelal/WebMonitor)",
-  "notification": {
-    "title": "WebMonitor change detected",
-    "message": "Monitored webpage content changed."
-  }
+  "max_attempts": 3,
+  "backoff_seconds": 1,
+  "state_file": ".webmonitor/state.json"
 }
 ```
 
-`config.json` is intentionally ignored by Git so target-specific configuration remains local.
+## Retry and backoff behavior
 
-### Comparison modes
+`max_attempts` includes the first request. It must be between **1 and 10**.
 
-`text` compares normalized visible text inside matched elements. It is useful when markup or attributes may change but the meaningful text does not.
+`backoff_seconds` controls the initial delay between retry attempts. Delays grow exponentially:
 
-`html` compares the selected HTML fragment and can detect attribute or link changes even when visible text stays the same. It can also be noisier on pages with frequently changing markup.
+```text
+backoff_seconds × 1
+backoff_seconds × 2
+backoff_seconds × 4
+...
+```
+
+WebMonitor retries:
+
+- connection failures and request timeouts
+- HTTP `429`
+- HTTP `500`, `502`, `503`, `504`
+
+It does not retry ordinary permanent client errors such as `400`, `401`, `403`, or `404`.
+
+The target URL is not echoed in runtime HTTP error messages.
+
+## Target failure isolation
+
+In multi-target mode, each target is checked independently. If one target fails after its retry budget is exhausted, WebMonitor reports that failure and continues checking the remaining targets.
+
+For `--once`, the process exits with code `1` when at least one target failed, even if other targets succeeded. This makes the command useful in schedulers and operational checks without hiding partial failure.
+
+## Comparison modes
+
+`text` compares normalized visible text inside matched elements. It is useful when markup changes but meaningful text stays stable.
+
+`html` compares the selected HTML fragment and can detect attribute or link changes even when visible text is unchanged. It may be noisier on pages with frequently changing markup.
 
 ## Check statuses
 
 | Status | Meaning | Notification |
 |---|---|---|
-| `baseline` | No compatible previous digest exists; current state becomes the baseline | No |
-| `unchanged` | Current digest matches the stored baseline | No |
-| `changed` | Current digest differs; new digest becomes the baseline | Yes |
+| `baseline` | No compatible previous digest exists | No |
+| `unchanged` | Current digest matches stored digest | No |
+| `changed` | Current digest differs; state is updated | Yes |
 
-If the configured selector matches no elements, the check fails instead of silently treating an empty selection as valid content. Invalid selector syntax also fails with a controlled monitor error.
+For multiple targets, CLI output is prefixed with the target name, for example:
+
+```text
+[homepage] Status: unchanged; matched elements: 1
+[docs] WebMonitor change detected: Documentation content changed.
+[docs] Status: changed; matched elements: 1
+```
+
+## State privacy and identity
+
+State files contain only hashes and a schema version:
+
+```json
+{
+  "monitor_key": "<sha256 target identity>",
+  "sha256": "<sha256 selected content>",
+  "version": 1
+}
+```
+
+The `monitor_key` is derived from the target URL, CSS selector, and comparison mode. If that monitoring definition changes, WebMonitor safely creates a new baseline instead of comparing unrelated content and sending a false-positive notification.
+
+Legacy state files without a target identity are also re-baselined safely.
 
 ## Desktop notifications
 
@@ -166,117 +248,74 @@ python -m pip install -r requirements-desktop.txt
 python main.py --config config.json --desktop-notifications
 ```
 
-Desktop notification availability depends on the local operating system and session environment. Notification failure does not expose monitored content.
-
-## State privacy
-
-The state file stores only versioned SHA-256 identifiers shaped like:
-
-```json
-{
-  "monitor_key": "<sha256-of-monitor-identity>",
-  "sha256": "<sha256-of-selected-content>",
-  "version": 1
-}
-```
-
-`monitor_key` is derived from the target URL, CSS selector, and comparison mode. Neither selected webpage content nor the raw target configuration is persisted in the state file.
-
-Selected webpage content is held in memory for comparison and is not persisted by WebMonitor. The default `.webmonitor/` directory is ignored by Git.
-
-Legacy state files without a monitor identity are safely re-baselined once after upgrading rather than triggering a potentially incorrect change alert.
+Desktop notification availability depends on the operating system and active user session.
 
 ## Tests
 
-Run the complete suite locally:
+Run locally:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The unit suite covers:
+The suite covers:
 
-- configuration validation
-- deterministic monitor identity generation
-- first-run baseline behavior
-- unchanged and changed states
-- hash-only persistence
-- safe re-baselining after target/selector identity changes
-- legacy-state migration behavior
-- text and HTML comparison behavior
-- selector mismatch and invalid-selector handling
+- single-target backward compatibility
+- multi-target config parsing and validation
+- unique target names and state isolation
+- baseline / unchanged / changed behavior
+- target-identity re-baselining
+- hash-only state persistence
+- text and HTML comparison modes
+- malformed and unmatched CSS selectors
 - request timeout and User-Agent propagation
-- privacy-safe HTTP errors
-- malformed state handling
+- retryable vs non-retryable HTTP failures
+- exponential retry backoff
+- privacy-safe error messages
+- real HTTP + subprocess CLI integration
+- multi-target partial-failure behavior
 
-### CLI end-to-end test
-
-The repository also includes a deterministic end-to-end test that starts a real HTTP server on `127.0.0.1`, launches `main.py` as a subprocess, and verifies the complete workflow:
-
-```text
-local page: initial value
-        ↓
-baseline
-        ↓
-same page
-        ↓
-unchanged
-        ↓
-local page content changes
-        ↓
-changed + notification
-        ↓
-same changed page
-        ↓
-unchanged
-```
-
-The E2E test uses the real Requests client, HTML parsing, CSS selection, state file persistence, CLI exit codes, and console notification output. It requires no external monitored website and generates no third-party traffic.
-
-Run only the E2E test:
-
-```bash
-python -m unittest discover -s tests -p "test_cli_integration.py" -v
-```
+The integration suite starts an HTTP server on localhost, intentionally returns transient `503` responses, runs the real CLI as a subprocess, verifies retry recovery, changes individual target content, and confirms that only the affected target emits a change notification.
 
 ## Continuous Integration
 
-GitHub Actions verifies Python **3.10 through 3.14** by checking:
+GitHub Actions tests Python **3.10 through 3.14** with:
 
 - dependency installation and consistency
 - source compilation
-- mocked unit tests
-- real localhost CLI end-to-end monitoring flow
+- unit tests
+- real localhost CLI integration tests
 - example configuration validation without external network access
-- core dependency vulnerabilities with `pip-audit`
-- optional desktop dependency vulnerabilities with `pip-audit`
+- core dependency auditing with `pip-audit`
+- optional desktop dependency auditing with `pip-audit`
 
 Workflow permissions are read-only for repository contents, and checkout credentials are not persisted.
 
 ## Security and responsible operation
 
 - monitor only pages you are authorized to access
-- choose a polling interval consistent with the target site's terms and acceptable-use policies
+- use polling intervals consistent with target-site terms and acceptable-use policies
 - do not commit authenticated target URLs, cookies, tokens, or authorization headers
-- keep local configuration and state outside source control
-- use an explicit selector to minimize unnecessary data processing
+- keep local target-specific configuration and state outside source control
+- use explicit selectors to minimize unnecessary data processing
+- keep retry budgets bounded; retries are for temporary failures, not aggressive polling
 
 See [SECURITY.md](SECURITY.md) for reporting and configuration guidance.
 
 ## Current scope and limitations
 
-WebMonitor intentionally remains a small polling application:
+WebMonitor intentionally remains a small polling service:
 
-- one target per process
-- static HTTP/HTML fetching with `requests`
+- one process can monitor multiple static HTTP/HTML targets
+- all targets currently share one polling interval
 - no JavaScript rendering or browser automation
 - no login/session workflow in the public implementation
 - no distributed scheduler or worker queue
-- no retry/backoff policy beyond the next configured polling cycle
 - no historical content archive
-- no uptime SLA, latency monitoring, or incident-management features
+- no uptime SLA, latency dashboard, or incident-management system
+- notification channels currently include console and optional desktop only
 
-These are product boundaries, not capabilities claimed by the current implementation.
+These are explicit product boundaries, not capabilities claimed by the current implementation.
 
 ## Repository structure
 

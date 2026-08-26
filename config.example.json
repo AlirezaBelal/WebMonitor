@@ -1,13 +1,30 @@
 {
-  "target_url": "https://example.com/",
-  "css_selector": "body",
-  "comparison_mode": "text",
   "check_interval_seconds": 300,
   "request_timeout_seconds": 10,
-  "state_file": ".webmonitor/state.json",
-  "user_agent": "WebMonitor/2.0 (+https://github.com/AlirezaBelal/WebMonitor)",
-  "notification": {
-    "title": "WebMonitor change detected",
-    "message": "Monitored webpage content changed."
-  }
+  "max_attempts": 3,
+  "backoff_seconds": 1,
+  "user_agent": "WebMonitor/3.0 (+https://github.com/AlirezaBelal/WebMonitor)",
+  "targets": [
+    {
+      "name": "homepage",
+      "target_url": "https://example.com/",
+      "css_selector": "body",
+      "comparison_mode": "text",
+      "notification": {
+        "title": "WebMonitor change detected",
+        "message": "Homepage content changed."
+      }
+    },
+    {
+      "name": "docs",
+      "target_url": "https://example.com/docs",
+      "css_selector": "main",
+      "comparison_mode": "html",
+      "max_attempts": 2,
+      "notification": {
+        "title": "WebMonitor change detected",
+        "message": "Documentation content changed."
+      }
+    }
+  ]
 }
