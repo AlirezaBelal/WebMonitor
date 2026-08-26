@@ -311,7 +311,7 @@ Validation without network access:
 ```bash
 docker run --rm \
   -v "$PWD/deploy/config.container.example.json:/config/config.json:ro" \
-  webmonitor --validate-config
+  webmonitor --config /config/config.json --validate-config
 ```
 
 ## systemd deployment
