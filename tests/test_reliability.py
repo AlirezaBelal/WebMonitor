@@ -12,6 +12,16 @@ class FakeResponse:
     def __init__(self, text: str, status_code: int = 200):
         self.text = text
         self.status_code = status_code
+        self.headers = {}
+        self.encoding = "utf-8"
+
+    def iter_content(self, chunk_size=65536):
+        payload = self.text.encode(self.encoding)
+        for start in range(0, len(payload), chunk_size):
+            yield payload[start : start + chunk_size]
+
+    def close(self):
+        return None
 
     def raise_for_status(self):
         if self.status_code >= 400:
