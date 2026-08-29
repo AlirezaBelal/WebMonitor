@@ -1,10 +1,10 @@
-# WebMonitor
+# Web Monitor
 
-[![CI](https://github.com/AlirezaBelal/WebMonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/AlirezaBelal/WebMonitor/actions/workflows/ci.yml)
+[![CI](https://github.com/AlirezaBelal/web-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/AlirezaBelal/web-monitor/actions/workflows/ci.yml)
 
 > A configurable Python service for monitoring selected webpage content, detecting meaningful changes, and delivering alerts without persisting scraped content.
 
-WebMonitor turns repeated manual page checks into a small operational workflow:
+Web Monitor turns repeated manual page checks into a small operational workflow:
 
 **fetch → retry/backoff → select → normalize → hash → compare → notify → commit state**
 
@@ -12,7 +12,7 @@ It supports multiple independent targets in one process, console/desktop/Webhook
 
 ## Product / automation context
 
-Many operational workflows begin with someone repeatedly opening one or more pages to check whether a relevant section changed. WebMonitor replaces that repetitive task with an explicit, inspectable workflow while keeping the monitored scope narrow through CSS selectors.
+Many operational workflows begin with someone repeatedly opening one or more pages to check whether a relevant section changed. Web Monitor replaces that repetitive task with an explicit, inspectable workflow while keeping the monitored scope narrow through CSS selectors.
 
 The first successful check establishes a baseline and does not send a false-positive alert. Later checks compare only SHA-256 digests. Scraped page content is processed in memory and is not written to state or health files.
 
@@ -72,8 +72,8 @@ Target N ─┘          │
 Requires **Python 3.10+**.
 
 ```bash
-git clone https://github.com/AlirezaBelal/WebMonitor.git
-cd WebMonitor
+git clone https://github.com/AlirezaBelal/web-monitor.git
+cd web-monitor
 python -m venv .venv
 ```
 
@@ -147,7 +147,7 @@ python main.py --config config.json
 }
 ```
 
-Each multi-target entry requires a unique safe `name`. If `state_file` is omitted, WebMonitor derives `.webmonitor/<name>.json`. Multiple targets cannot share the same state file.
+Each multi-target entry requires a unique safe `name`. If `state_file` is omitted, Web Monitor derives `.webmonitor/<name>.json`. Multiple targets cannot share the same state file.
 
 The legacy single-target format remains supported.
 
@@ -159,7 +159,7 @@ The legacy single-target format remains supported.
 
 ## Retry and failure isolation
 
-`max_attempts` is limited to 1–10. Between transient failures, WebMonitor waits:
+`max_attempts` is limited to 1–10. Between transient failures, Web Monitor waits:
 
 ```text
 backoff_seconds × 2^(attempt - 1)
@@ -171,7 +171,7 @@ In multi-target mode, a failed target is reported as an error while the remainin
 
 ## Notification backends
 
-Notification messages contain only configured target names/titles/messages. WebMonitor does not include monitored URLs or scraped content in Webhook or Telegram payloads.
+Notification messages contain only configured target names/titles/messages. Web Monitor does not include monitored URLs or scraped content in Webhook or Telegram payloads.
 
 ### Console
 
@@ -243,7 +243,7 @@ Set the real bot token and chat ID only in the runtime environment or a protecte
 
 ### Alert delivery semantics
 
-On a detected change, WebMonitor sends the alert **before** committing the new digest. If delivery fails, the old digest remains active and the same change is retried on the next check.
+On a detected change, Web Monitor sends the alert **before** committing the new digest. If delivery fails, the old digest remains active and the same change is retried on the next check.
 
 This favors at-least-once notification delivery: a rare failure after the remote alert succeeds but before local state persistence can produce a duplicate alert, but a transient notification outage does not silently lose the change.
 
@@ -359,7 +359,7 @@ A target state file contains only identifiers shaped like:
 
 `monitor_key` identifies the combination of target URL, CSS selector, and comparison mode without storing those values directly.
 
-If an old state file does not include a monitor identity, or if the monitored definition changes, WebMonitor safely creates a new baseline instead of generating a potentially false alert.
+If an old state file does not include a monitor identity, or if the monitored definition changes, Web Monitor safely creates a new baseline instead of generating a potentially false alert.
 
 ## Testing
 
@@ -421,7 +421,7 @@ See [SECURITY.md](SECURITY.md) for reporting and deployment guidance.
 
 ## Current scope and limitations
 
-WebMonitor remains intentionally focused:
+Web Monitor remains intentionally focused:
 
 - static HTTP/HTML fetching with `requests`
 - no JavaScript rendering or browser automation
