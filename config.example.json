@@ -4,7 +4,7 @@
   "max_attempts": 3,
   "backoff_seconds": 1,
   "health_file": ".webmonitor/health.json",
-  "user_agent": "WebMonitor/4.0 (+https://github.com/AlirezaBelal/WebMonitor)",
+  "user_agent": "WebMonitor/4.0 (+https://github.com/AlirezaBelal/web-monitor)",
   "targets": [
     {
       "name": "homepage",
