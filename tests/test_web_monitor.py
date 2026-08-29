@@ -16,9 +16,19 @@ from web_monitor import (
 
 
 class FakeResponse:
-    def __init__(self, text: str, status_code: int = 200):
+    def __init__(self, text: str, status_code: int = 200, headers=None):
         self.text = text
         self.status_code = status_code
+        self.headers = headers or {}
+        self.encoding = "utf-8"
+
+    def iter_content(self, chunk_size=65536):
+        payload = self.text.encode(self.encoding)
+        for start in range(0, len(payload), chunk_size):
+            yield payload[start : start + chunk_size]
+
+    def close(self):
+        return None
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -404,6 +414,40 @@ class WebMonitorTests(unittest.TestCase):
                 monitor.check_once()
 
             self.assertEqual(str(context.exception), "Configured CSS selector is invalid")
+
+    def test_oversized_response_is_rejected_before_parsing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session = FakeSession(
+                [FakeResponse('<div class="item">too large</div>', headers={"Content-Length": "9999"})]
+            )
+            monitor = WebMonitor(
+                self._config(
+                    str(Path(temp_dir) / "state.json"),
+                    max_response_bytes=1024,
+                ),
+                session=session,
+            )
+
+            with self.assertRaises(MonitorError) as context:
+                monitor.check_once()
+
+            self.assertIn("size limit", str(context.exception))
+
+    def test_streamed_response_is_bounded_even_without_content_length(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session = FakeSession([FakeResponse('<div class="item">' + ('x' * 2000) + '</div>')])
+            monitor = WebMonitor(
+                self._config(
+                    str(Path(temp_dir) / "state.json"),
+                    max_response_bytes=1024,
+                ),
+                session=session,
+            )
+
+            with self.assertRaises(MonitorError) as context:
+                monitor.check_once()
+
+            self.assertIn("size limit", str(context.exception))
 
     def test_request_timeout_and_user_agent_are_applied(self):
         with tempfile.TemporaryDirectory() as temp_dir:

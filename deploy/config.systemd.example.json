@@ -19,5 +19,6 @@
         "message": "Homepage content changed."
       }
     }
-  ]
+  ],
+  "max_response_bytes": 2000000
 }

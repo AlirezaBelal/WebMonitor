@@ -38,6 +38,7 @@ class MonitorConfig:
     comparison_mode: str = "text"
     check_interval_seconds: float = 300.0
     request_timeout_seconds: float = 10.0
+    max_response_bytes: int = 2_000_000
     state_file: str = ".webmonitor/state.json"
     user_agent: str = "WebMonitor/4.0"
     notification_title: str = "WebMonitor change detected"
@@ -86,6 +87,12 @@ class MonitorConfig:
         request_timeout_seconds = _positive_float(
             payload.get("request_timeout_seconds", 10),
             "request_timeout_seconds",
+        )
+        max_response_bytes = _bounded_int(
+            payload.get("max_response_bytes", 2_000_000),
+            "max_response_bytes",
+            1_024,
+            50_000_000,
         )
         max_attempts = _bounded_int(
             payload.get("max_attempts", 3), "max_attempts", 1, 10
@@ -148,6 +155,7 @@ class MonitorConfig:
             comparison_mode=comparison_mode,
             check_interval_seconds=check_interval_seconds,
             request_timeout_seconds=request_timeout_seconds,
+            max_response_bytes=max_response_bytes,
             state_file=state_file,
             user_agent=user_agent,
             notification_title=str(
@@ -218,6 +226,12 @@ class MonitorSuiteConfig:
             payload.get("request_timeout_seconds", 10),
             "request_timeout_seconds",
         )
+        shared_max_response_bytes = _bounded_int(
+            payload.get("max_response_bytes", 2_000_000),
+            "max_response_bytes",
+            1_024,
+            50_000_000,
+        )
         shared_attempts = _bounded_int(
             payload.get("max_attempts", 3), "max_attempts", 1, 10
         )
@@ -252,6 +266,7 @@ class MonitorSuiteConfig:
             merged = dict(raw_target)
             merged["check_interval_seconds"] = shared_interval
             merged.setdefault("request_timeout_seconds", shared_timeout)
+            merged.setdefault("max_response_bytes", shared_max_response_bytes)
             merged.setdefault("max_attempts", shared_attempts)
             merged.setdefault("backoff_seconds", shared_backoff)
             merged.setdefault("user_agent", shared_user_agent)
@@ -372,6 +387,7 @@ class WebMonitor:
                     self.config.target_url,
                     headers={"User-Agent": self.config.user_agent},
                     timeout=self.config.request_timeout_seconds,
+                    stream=True,
                 )
                 response.raise_for_status()
                 return response
@@ -396,11 +412,40 @@ class WebMonitor:
         )
         raise MonitorError(message) from last_exception
 
+    def _read_limited_response_text(self, response: requests.Response) -> str:
+        """Read a streamed response without allowing unbounded memory growth."""
+        declared_length = response.headers.get("Content-Length")
+        if declared_length:
+            try:
+                if int(declared_length) > self.config.max_response_bytes:
+                    raise MonitorError("HTTP response exceeded configured size limit")
+            except ValueError:
+                pass
+
+        chunks: list[bytes] = []
+        total_bytes = 0
+        try:
+            for chunk in response.iter_content(chunk_size=65_536):
+                if not chunk:
+                    continue
+                total_bytes += len(chunk)
+                if total_bytes > self.config.max_response_bytes:
+                    raise MonitorError("HTTP response exceeded configured size limit")
+                chunks.append(chunk)
+        except requests.RequestException as exc:
+            raise MonitorError("HTTP response body could not be read") from exc
+        finally:
+            response.close()
+
+        encoding = response.encoding or "utf-8"
+        return b"".join(chunks).decode(encoding, errors="replace")
+
     def fetch_digest(self) -> tuple[str, int]:
         """Fetch the page, extract configured content, and return its digest."""
         response = self._request_with_retry()
+        response_text = self._read_limited_response_text(response)
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(response_text, "html.parser")
         try:
             elements = soup.select(self.config.css_selector)
         except Exception as exc:

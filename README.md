@@ -470,3 +470,7 @@ Released under the [MIT License](LICENSE).
 ## Portfolio
 
 For broader product, data, and automation work, see **[alirezabelal.github.io](https://alirezabelal.github.io/)**.
+
+## HTTP response resource boundary
+
+Each target has a configurable `max_response_bytes` limit (default `2000000`). Responses are requested in streaming mode and rejected if the declared or observed body size exceeds that limit. This prevents a monitored endpoint from causing unbounded response buffering before HTML selection and hashing.
