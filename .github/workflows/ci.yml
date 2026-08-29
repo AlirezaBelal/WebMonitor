@@ -51,6 +51,35 @@ jobs:
           python main.py --config deploy/config.container.example.json --validate-config
           python main.py --config deploy/config.systemd.example.json --validate-config
 
+  quality:
+    name: Static analysis and coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install quality tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt coverage ruff
+
+      - name: Run Ruff correctness checks
+        run: ruff check --select E9,F63,F7,F82 .
+
+      - name: Enforce test coverage
+        run: |
+          coverage run --source=web_monitor,notifications,health,main -m unittest discover -s tests -v
+          coverage report --show-missing --fail-under=80
+
   security-audit:
     name: Dependency audit
     runs-on: ubuntu-latest
@@ -79,6 +108,7 @@ jobs:
   container:
     name: Docker build and runtime
     runs-on: ubuntu-latest
+    needs: [test, quality, security-audit]
 
     steps:
       - name: Check out repository
