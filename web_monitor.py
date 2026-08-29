@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 import re
 import time
@@ -67,6 +68,8 @@ class MonitorConfig:
         parsed_url = urlparse(target_url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
             raise ConfigurationError("target_url must be an absolute HTTP(S) URL")
+        if parsed_url.username or parsed_url.password:
+            raise ConfigurationError("target_url must not include credentials")
 
         css_selector = str(payload.get("css_selector", "")).strip()
         if not css_selector:
@@ -472,10 +475,15 @@ def _non_negative_float(value: object, field_name: str) -> float:
 
 
 def _number(value: object, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ConfigurationError(f"{field_name} must be a finite number")
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigurationError(f"{field_name} must be a number") from exc
+        raise ConfigurationError(f"{field_name} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise ConfigurationError(f"{field_name} must be a finite number")
+    return parsed
 
 
 def _bounded_int(value: object, field_name: str, minimum: int, maximum: int) -> int:
